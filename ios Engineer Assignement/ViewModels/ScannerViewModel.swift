@@ -28,15 +28,20 @@ class ScannerViewModel: NSObject, ObservableObject, ARSessionDelegate, ARSCNView
     
     // Memory Optimization: Pre-cached shared SCNGeometry & SCNMaterial to avoid runtime allocations
     private lazy var tickGeometry: SCNPlane = {
-        let plane = SCNPlane(width: 0.06, height: 0.06)
-        let config = UIImage.SymbolConfiguration(pointSize: 100, weight: .bold)
-        let image = UIImage(systemName: "checkmark.circle.fill", withConfiguration: config)?
-            .withTintColor(.systemGreen, renderingMode: .alwaysOriginal)
+        let plane = SCNPlane(width: 0.05, height: 0.05) // Slightly smaller, tighter tick
+        
+        // Multi-color palette: white checkmark, green background circle
+        let config = UIImage.SymbolConfiguration(paletteColors: [.white, .systemGreen])
+        // Fallback to regular green tint if palette fails
+        let image = UIImage(systemName: "checkmark.circle.fill", withConfiguration: config) ?? 
+                    UIImage(systemName: "checkmark.circle.fill")?.withTintColor(.systemGreen, renderingMode: .alwaysOriginal)
         
         let material = SCNMaterial()
         material.diffuse.contents = image
         material.isDoubleSided = true
+        material.transparent.contents = image // Ensure background remains transparent
         plane.materials = [material]
+        
         return plane
     }()
     
@@ -89,19 +94,23 @@ class ScannerViewModel: NSObject, ObservableObject, ARSessionDelegate, ARSCNView
             // Map normalized viewport coordinates to actual pixel coordinates
             let centerPoint = CGPoint(x: viewportPoint.x * screenWidth, y: viewportPoint.y * screenHeight)
             
-            // Raycast query: 1. Try existingPlaneGeometry for high stability, 2. Fall back to estimatedPlane
-            var query = arView.raycastQuery(from: centerPoint, allowing: .existingPlaneGeometry, alignment: .any)
-            var result = query.flatMap { arView.session.raycast($0).first }
+            var worldTransform: simd_float4x4?
             
-            if result == nil {
-                query = arView.raycastQuery(from: centerPoint, allowing: .estimatedPlane, alignment: .any)
-                result = query.flatMap { arView.session.raycast($0).first }
+            // Raycast query: 1. Try estimated plane
+            let query = arView.raycastQuery(from: centerPoint, allowing: .estimatedPlane, alignment: .any)
+            if let result = query.flatMap({ arView.session.raycast($0).first }) {
+                worldTransform = result.worldTransform
+            } else {
+                // 2. Fall back to feature points to hit organic objects (like a shoe/chappal) exactly on their surface
+                let hitTestResults = arView.hitTest(centerPoint, types: [.featurePoint])
+                if let firstHit = hitTestResults.first {
+                    worldTransform = firstHit.worldTransform
+                }
             }
             
-            guard let finalResult = result else { continue }
+            guard let finalTransform = worldTransform else { continue }
             
-            let worldTransform = finalResult.worldTransform
-            let position = simd_make_float3(worldTransform.columns.3.x, worldTransform.columns.3.y, worldTransform.columns.3.z)
+            let position = simd_make_float3(finalTransform.columns.3.x, finalTransform.columns.3.y, finalTransform.columns.3.z)
             
             // Non-Duplication Check
             if isDuplicate(at: position) {
@@ -109,7 +118,7 @@ class ScannerViewModel: NSObject, ObservableObject, ARSessionDelegate, ARSCNView
             }
             
             // Add a new ARAnchor at this position
-            let newAnchor = ARAnchor(transform: worldTransform)
+            let newAnchor = ARAnchor(transform: finalTransform)
             arView.session.add(anchor: newAnchor)
             
             // Track the item thread-safely

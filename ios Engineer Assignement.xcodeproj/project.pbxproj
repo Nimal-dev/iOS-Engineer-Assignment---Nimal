@@ -29,9 +29,22 @@
 		316BF784300F7DB100A96B17 /* ios Engineer AssignementUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "ios Engineer AssignementUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		316BF8E8300FD19B00A96B17 /* Exceptions for "ios Engineer Assignement" folder in "ios Engineer Assignement" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				"ios-Engineer-Assignement-Info.plist",
+			);
+			target = 316BF767300F7DB000A96B17 /* ios Engineer Assignement */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		316BF76A300F7DB000A96B17 /* ios Engineer Assignement */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				316BF8E8300FD19B00A96B17 /* Exceptions for "ios Engineer Assignement" folder in "ios Engineer Assignement" target */,
+			);
 			path = "ios Engineer Assignement";
 			sourceTree = "<group>";
 		};
@@ -394,6 +407,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "ios-Engineer-Assignement-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "";
 				INFOPLIST_KEY_LSApplicationCategoryType = "";
 				INFOPLIST_KEY_NSCameraUsageDescription = "We need camera access for AR product detection.";
@@ -439,6 +453,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "ios-Engineer-Assignement-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "";
 				INFOPLIST_KEY_LSApplicationCategoryType = "";
 				INFOPLIST_KEY_NSCameraUsageDescription = "We need camera access for AR product detection.";

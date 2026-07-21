@@ -22,6 +22,7 @@ class ScannerViewModel: NSObject, ObservableObject, ARSessionDelegate, ARSCNView
     var arView: ARSCNView?
     private var detectionService: ProductDetectionService
     private var trackedItems: [UUID: TrackedItem] = [:]
+    private let itemLock = NSRecursiveLock()
     
     // Distance threshold in meters (e.g. 15cm) to consider a product as "already scanned"
     private let duplicateDistanceThreshold: Float = 0.15
@@ -49,7 +50,7 @@ class ScannerViewModel: NSObject, ObservableObject, ARSessionDelegate, ARSCNView
         let screenHeight = arView.bounds.height
         
         let orientation: UIInterfaceOrientation
-        if #available(iOS 26.0, *) {
+        if #available(iOS 17.0, *) {
             orientation = arView.window?.windowScene?.effectiveGeometry.interfaceOrientation ?? .portrait
         } else {
             orientation = arView.window?.windowScene?.interfaceOrientation ?? .portrait
@@ -92,9 +93,11 @@ class ScannerViewModel: NSObject, ObservableObject, ARSessionDelegate, ARSCNView
             let newAnchor = ARAnchor(transform: worldTransform)
             arView.session.add(anchor: newAnchor)
             
-            // Track the item
+            // Track the item thread-safely
             let tracked = TrackedItem(anchorIdentifier: newAnchor.identifier, type: product.type, position: position)
+            itemLock.lock()
             trackedItems[newAnchor.identifier] = tracked
+            itemLock.unlock()
             
             DispatchQueue.main.async {
                 self.detectedProductCount += 1
@@ -115,7 +118,11 @@ class ScannerViewModel: NSObject, ObservableObject, ARSessionDelegate, ARSCNView
     }
     
     private func isDuplicate(_ type: DetectionType, at position: simd_float3) -> Bool {
-        for item in trackedItems.values {
+        itemLock.lock()
+        let items = Array(trackedItems.values)
+        itemLock.unlock()
+        
+        for item in items {
             switch (type, item.type) {
             case (.barcode(let codeA), .barcode(let codeB)):
                 // Barcode matches: absolute duplicate
@@ -148,7 +155,11 @@ class ScannerViewModel: NSObject, ObservableObject, ARSessionDelegate, ARSCNView
     // MARK: - ARSCNViewDelegate
     
     func renderer(_ renderer: SCNSceneRenderer, nodeFor anchor: ARAnchor) -> SCNNode? {
-        guard let trackedItem = trackedItems[anchor.identifier] else { return nil }
+        itemLock.lock()
+        let trackedItem = trackedItems[anchor.identifier]
+        itemLock.unlock()
+        
+        guard let trackedItem = trackedItem else { return nil }
         
         let node = SCNNode()
         

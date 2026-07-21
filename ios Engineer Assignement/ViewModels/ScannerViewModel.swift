@@ -7,10 +7,35 @@ import Vision
 import Combine
 import simd
 
+// MARK: - Models
+
 struct TrackedItem {
     let anchorIdentifier: UUID
     let position: simd_float3
 }
+
+/// A candidate detection that must be confirmed across multiple frames before a tick is placed.
+/// This prevents false positives from single noisy frames and ensures stable 3D placement.
+struct DetectionCandidate {
+    var positions: [simd_float3] = []
+    let firstSeen: TimeInterval
+    var lastSeen: TimeInterval
+    
+    /// Average of all accumulated 3D positions for a stable final anchor point
+    var averagePosition: simd_float3 {
+        guard !positions.isEmpty else { return simd_float3(0, 0, 0) }
+        var sum = simd_float3(0, 0, 0)
+        for p in positions { sum += p }
+        return sum / Float(positions.count)
+    }
+    
+    /// A candidate is confirmed when detected in 3+ frames spanning at least 1 second
+    var isConfirmed: Bool {
+        return positions.count >= 3 && (lastSeen - firstSeen) >= 1.0
+    }
+}
+
+// MARK: - ScannerViewModel
 
 class ScannerViewModel: NSObject, ObservableObject, ARSessionDelegate, ARSCNViewDelegate, ProductDetectorDelegate {
     
@@ -20,48 +45,56 @@ class ScannerViewModel: NSObject, ObservableObject, ARSessionDelegate, ARSCNView
     
     var arView: ARSCNView?
     private var detectionService: ProductDetectionService
+    
+    // Confirmed items that have been placed in the AR scene
     private var trackedItems: [UUID: TrackedItem] = [:]
     private let itemLock = NSRecursiveLock()
     
-    // Increased 3D Distance Threshold to 35cm so items like shoes, bags, and boxes only get 1 tick
-    private let duplicateDistanceThreshold: Float = 0.35
+    // Candidate detections waiting for multi-frame confirmation
+    private var candidates: [DetectionCandidate] = []
     
-    // Minimum distance on screen (in pixels) between two ticks to prevent overlap
-    private let screenSpaceDuplicatePixelRadius: Float = 90.0
+    // 3D distance threshold: two detections within 50cm are considered the same object
+    private let duplicateDistanceThreshold: Float = 0.50
     
-    // Memory Optimization: Pre-cached shared SCNGeometry & SCNMaterial components
+    // Candidate matching radius: a new detection within 30cm of an existing candidate is a re-observation
+    private let candidateMatchRadius: Float = 0.30
+    
+    // Stale candidate timeout: discard candidates not seen for 3 seconds
+    private let candidateTimeout: TimeInterval = 3.0
+    
+    // Camera motion tracking for shake filter
+    private var lastCameraTransform: simd_float4x4?
+    private var lastCameraTimestamp: TimeInterval = 0
+    
+    // Pre-cached SceneKit geometries
     private lazy var backgroundGeometry: SCNPlane = {
-        let plane = SCNPlane(width: 0.05, height: 0.05)
-        plane.cornerRadius = 0.025 // Perfect circle!
+        let plane = SCNPlane(width: 0.04, height: 0.04)
+        plane.cornerRadius = 0.02
         let material = SCNMaterial()
-        material.diffuse.contents = UIColor(red: 0.15, green: 0.68, blue: 0.37, alpha: 1.0) // Vibrantly green
+        material.diffuse.contents = UIColor(red: 0.18, green: 0.72, blue: 0.35, alpha: 1.0)
         material.isDoubleSided = true
         plane.materials = [material]
         return plane
     }()
     
     private lazy var checkmarkGeometry: SCNPlane = {
-        let plane = SCNPlane(width: 0.03, height: 0.03)
+        let plane = SCNPlane(width: 0.025, height: 0.025)
         let config = UIImage.SymbolConfiguration(pointSize: 100, weight: .bold)
         let image = UIImage(systemName: "checkmark", withConfiguration: config)?
             .withTintColor(.white, renderingMode: .alwaysOriginal)
-        
         let material = SCNMaterial()
         material.diffuse.contents = image
         material.isDoubleSided = true
-        material.transparent.contents = image // Keep transparent background clean
+        material.transparent.contents = image
         plane.materials = [material]
         return plane
     }()
     
     private lazy var sharedBillboardConstraint: SCNBillboardConstraint = {
-        let constraint = SCNBillboardConstraint()
-        constraint.freeAxes = .all
-        return constraint
+        let c = SCNBillboardConstraint()
+        c.freeAxes = .all
+        return c
     }()
-    
-    private var lastCameraTransform: simd_float4x4?
-    private var lastCameraTransformTime: TimeInterval = 0
     
     override init() {
         self.detectionService = ProductDetectionService()
@@ -82,35 +115,33 @@ class ScannerViewModel: NSObject, ObservableObject, ARSessionDelegate, ARSCNView
         guard let arView = arView, isScanning,
               let currentFrame = arView.session.currentFrame else { return }
         
-        // 1. Skip processing if ARKit tracking state is limited (e.g. excessive motion/shake) or not available
-        if case .limited = currentFrame.camera.trackingState {
-            return
-        }
-        if case .notAvailable = currentFrame.camera.trackingState {
-            return
-        }
+        // --- Gate 1: Only process when ARKit tracking is normal ---
+        if case .limited = currentFrame.camera.trackingState { return }
+        if case .notAvailable = currentFrame.camera.trackingState { return }
         
-        // 2. Velocity-based shake filter: If phone is moving too fast, discard frames to prevent blur/duplicate ticks
-        let currentTransform = currentFrame.camera.transform
-        let currentTime = ProcessInfo.processInfo.systemUptime
-        if let lastTransform = lastCameraTransform {
-            let lastPos = simd_make_float3(lastTransform.columns.3.x, lastTransform.columns.3.y, lastTransform.columns.3.z)
-            let currPos = simd_make_float3(currentTransform.columns.3.x, currentTransform.columns.3.y, currentTransform.columns.3.z)
-            let distanceMoved = simd_distance(lastPos, currPos)
-            let timeDiff = currentTime - lastCameraTransformTime
-            if timeDiff > 0 {
-                let speed = distanceMoved / Float(timeDiff)
-                // If moving faster than 0.7 meters per second, skip detections
-                if speed > 0.7 {
-                    lastCameraTransform = currentTransform
-                    lastCameraTransformTime = currentTime
+        // --- Gate 2: Skip if camera is shaking ---
+        let camTransform = currentFrame.camera.transform
+        let now = ProcessInfo.processInfo.systemUptime
+        if let lastTx = lastCameraTransform {
+            let lastPos = simd_make_float3(lastTx.columns.3)
+            let currPos = simd_make_float3(camTransform.columns.3)
+            let dt = now - lastCameraTimestamp
+            if dt > 0 {
+                let speed = simd_distance(lastPos, currPos) / Float(dt)
+                if speed > 0.5 {
+                    lastCameraTransform = camTransform
+                    lastCameraTimestamp = now
                     return
                 }
             }
         }
-        lastCameraTransform = currentTransform
-        lastCameraTransformTime = currentTime
+        lastCameraTransform = camTransform
+        lastCameraTimestamp = now
         
+        // --- Prune stale candidates ---
+        candidates.removeAll { now - $0.lastSeen > candidateTimeout }
+        
+        // --- Process each detection ---
         let screenWidth = arView.bounds.width
         let screenHeight = arView.bounds.height
         
@@ -123,65 +154,103 @@ class ScannerViewModel: NSObject, ObservableObject, ARSessionDelegate, ARSCNView
         
         for product in products {
             let rect = product.boundingBox
-            
-            // Convert from Vision [0, 1] (origin bottom-left)
-            // to normalized camera frame coordinate system (origin top-left)
             let normalizedCenter = CGPoint(x: rect.midX, y: 1.0 - rect.midY)
             
-            // Get the display transform mapping camera frame to screen viewport
-            let transform = currentFrame.displayTransform(for: orientation, viewportSize: arView.bounds.size)
-            let viewportPoint = normalizedCenter.applying(transform)
+            let displayTx = currentFrame.displayTransform(for: orientation, viewportSize: arView.bounds.size)
+            let viewportPt = normalizedCenter.applying(displayTx)
+            let screenPt = CGPoint(x: viewportPt.x * screenWidth, y: viewportPt.y * screenHeight)
             
-            // Map normalized viewport coordinates to actual pixel coordinates
-            let centerPoint = CGPoint(x: viewportPoint.x * screenWidth, y: viewportPoint.y * screenHeight)
-            
+            // --- Raycast to 3D world position ---
             var worldTransform: simd_float4x4?
             
-            // 1. Try hitting physical feature points on the object
-            let hitTestResults = arView.hitTest(centerPoint, types: [.featurePoint])
-            if let firstHit = hitTestResults.first {
-                worldTransform = firstHit.worldTransform
+            // Priority 1: Existing detected plane geometry (most stable, sticks to real surfaces)
+            if let query = arView.raycastQuery(from: screenPt, allowing: .existingPlaneGeometry, alignment: .any),
+               let result = arView.session.raycast(query).first {
+                worldTransform = result.worldTransform
             }
             
-            // 2. Fall back to estimated plane if feature point test yields no hits
+            // Priority 2: Estimated plane
+            if worldTransform == nil,
+               let query = arView.raycastQuery(from: screenPt, allowing: .estimatedPlane, alignment: .any),
+               let result = arView.session.raycast(query).first {
+                worldTransform = result.worldTransform
+            }
+            
+            // Priority 3: Feature points (noisier but works on organic objects)
             if worldTransform == nil {
-                let query = arView.raycastQuery(from: centerPoint, allowing: .estimatedPlane, alignment: .any)
-                if let result = query.flatMap({ arView.session.raycast($0).first }) {
-                    worldTransform = result.worldTransform
+                let hits = arView.hitTest(screenPt, types: [.featurePoint])
+                if let hit = hits.first {
+                    worldTransform = hit.worldTransform
                 }
             }
             
-            guard var finalTransform = worldTransform else { continue }
+            guard let hitTransform = worldTransform else { continue }
             
-            // Distance Check: Ensure object is at a natural scanning distance (0.45m to 4.0m)
-            let cameraPosition = currentFrame.camera.transform.columns.3
-            let objectPosition = finalTransform.columns.3
-            let distance = simd_distance(simd_make_float3(cameraPosition.x, cameraPosition.y, cameraPosition.z),
-                                         simd_make_float3(objectPosition.x, objectPosition.y, objectPosition.z))
+            let position = simd_make_float3(hitTransform.columns.3)
             
-            guard distance > 0.45 && distance < 4.0 else { continue }
+            // --- Distance sanity check ---
+            let camPos = simd_make_float3(camTransform.columns.3)
+            let dist = simd_distance(camPos, position)
+            guard dist > 0.3 && dist < 5.0 else { continue }
             
-            // Reset rotation to align perfectly with the world coordinate axes.
-            finalTransform.columns.0 = simd_make_float4(1, 0, 0, 0)
-            finalTransform.columns.1 = simd_make_float4(0, 1, 0, 0)
-            finalTransform.columns.2 = simd_make_float4(0, 0, 1, 0)
+            // --- Skip if too close to an already-confirmed item ---
+            if isConfirmedDuplicate(at: position) { continue }
             
-            let position = simd_make_float3(finalTransform.columns.3.x, finalTransform.columns.3.y, finalTransform.columns.3.z)
+            // --- Feed into candidate confirmation system ---
+            feedCandidate(position: position, timestamp: now, arView: arView)
+        }
+        
+        // --- Promote confirmed candidates ---
+        promoteConfirmedCandidates(arView: arView)
+    }
+    
+    // MARK: - Candidate Confirmation System
+    
+    /// Feed a new 3D detection position into the candidate pool.
+    private func feedCandidate(position: simd_float3, timestamp: TimeInterval, arView: ARSCNView) {
+        // Try to match with an existing candidate
+        for i in 0..<candidates.count {
+            if simd_distance(candidates[i].averagePosition, position) < candidateMatchRadius {
+                candidates[i].positions.append(position)
+                candidates[i].lastSeen = timestamp
+                return
+            }
+        }
+        
+        // No match found — create a new candidate
+        var newCandidate = DetectionCandidate(firstSeen: timestamp, lastSeen: timestamp)
+        newCandidate.positions.append(position)
+        candidates.append(newCandidate)
+    }
+    
+    /// Check all candidates and promote those that have been confirmed (seen 3+ times over 1+ second).
+    private func promoteConfirmedCandidates(arView: ARSCNView) {
+        var promotedIndices: [Int] = []
+        
+        for i in 0..<candidates.count {
+            guard candidates[i].isConfirmed else { continue }
             
-            // Advanced Dual-Phase Non-Duplication Check (3D World + 2D Screen Space)
-            if isDuplicate(at: position, screenPoint: centerPoint) {
+            let avgPos = candidates[i].averagePosition
+            
+            // Double-check it's not a duplicate of an already-placed item
+            if isConfirmedDuplicate(at: avgPos) {
+                promotedIndices.append(i)
                 continue
             }
             
-            // Add a new ARAnchor at this position
-            let newAnchor = ARAnchor(transform: finalTransform)
+            // Build a clean, rotation-reset transform at the averaged position
+            var anchorTransform = matrix_identity_float4x4
+            anchorTransform.columns.3 = simd_make_float4(avgPos.x, avgPos.y, avgPos.z, 1)
+            
+            let newAnchor = ARAnchor(transform: anchorTransform)
             arView.session.add(anchor: newAnchor)
             
-            // Track the item thread-safely
-            let tracked = TrackedItem(anchorIdentifier: newAnchor.identifier, position: position)
+            let tracked = TrackedItem(anchorIdentifier: newAnchor.identifier, position: avgPos)
             itemLock.lock()
             trackedItems[newAnchor.identifier] = tracked
             itemLock.unlock()
+            
+            promotedIndices.append(i)
             
             DispatchQueue.main.async {
                 self.detectedProductCount += 1
@@ -189,40 +258,29 @@ class ScannerViewModel: NSObject, ObservableObject, ARSessionDelegate, ARSCNView
                 self.triggerHapticFeedback()
             }
         }
+        
+        // Remove promoted/discarded candidates in reverse order to preserve indices
+        for i in promotedIndices.sorted().reversed() {
+            candidates.remove(at: i)
+        }
     }
     
-    private func isDuplicate(at position: simd_float3, screenPoint: CGPoint) -> Bool {
+    // MARK: - Duplication Check
+    
+    private func isConfirmedDuplicate(at position: simd_float3) -> Bool {
         itemLock.lock()
         let items = Array(trackedItems.values)
         itemLock.unlock()
         
-        // Phase 1: 3D Spatial Distance Check (35cm radius)
         for item in items {
             if simd_distance(position, item.position) < duplicateDistanceThreshold {
                 return true
             }
         }
-        
-        // Phase 2: 2D Screen Space Projection Overlap Check
-        if let arView = arView {
-            for item in items {
-                let projectedPoint = arView.projectPoint(SCNVector3(item.position.x, item.position.y, item.position.z))
-                // Ensure the existing anchor is in front of the camera viewport
-                if projectedPoint.z > 0 && projectedPoint.z < 1.0 {
-                    let dx = projectedPoint.x - Float(screenPoint.x)
-                    let dy = projectedPoint.y - Float(screenPoint.y)
-                    let pixelDistance = sqrt(dx * dx + dy * dy)
-                    
-                    // If a tick is already displayed within 90 pixels on screen, reject duplicate!
-                    if pixelDistance < screenSpaceDuplicatePixelRadius {
-                        return true
-                    }
-                }
-            }
-        }
-        
         return false
     }
+    
+    // MARK: - Haptics
     
     private func triggerHapticFeedback() {
         let generator = UINotificationFeedbackGenerator()
@@ -246,16 +304,16 @@ class ScannerViewModel: NSObject, ObservableObject, ARSessionDelegate, ARSCNView
         
         // White checkmark foreground
         let tickNode = SCNNode(geometry: checkmarkGeometry)
-        tickNode.position = SCNVector3(0, 0, 0.002) // Offset slightly forward to prevent z-fighting
+        tickNode.position = SCNVector3(0, 0, 0.002)
         
         containerNode.addChildNode(bgNode)
         containerNode.addChildNode(tickNode)
         
-        // Billboard constraint so the tick ALWAYS faces the camera
+        // Billboard: tick always faces the camera
         containerNode.constraints = [sharedBillboardConstraint]
         
-        // Float the tick 4cm above the contact point so it is clearly visible and does not clip
-        containerNode.position = SCNVector3(0, 0.04, 0)
+        // Lift tick 3cm above the anchor surface so it hovers just above the product
+        containerNode.position = SCNVector3(0, 0.03, 0)
         
         rootNode.addChildNode(containerNode)
         

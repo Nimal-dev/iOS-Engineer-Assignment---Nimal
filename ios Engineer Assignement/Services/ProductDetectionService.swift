@@ -23,6 +23,14 @@ class ProductDetectionService {
     private let minProcessingInterval: CFTimeInterval = 0.25 // Limit to ~4 FPS to save memory/CPU
     private let detectionQueue = DispatchQueue(label: "com.assignment.productDetectionQueue", qos: .userInitiated)
     
+    private lazy var rectangleRequest: VNDetectRectanglesRequest = {
+        let request = VNDetectRectanglesRequest()
+        request.maximumObservations = 5
+        request.minimumConfidence = 0.6
+        request.minimumSize = 0.1
+        return request
+    }()
+    
     private lazy var saliencyRequest: VNGenerateObjectnessBasedSaliencyImageRequest = {
         let request = VNGenerateObjectnessBasedSaliencyImageRequest()
         return request
@@ -44,20 +52,27 @@ class ProductDetectionService {
                 let requestHandler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
                 
                 do {
-                    try requestHandler.perform([self.saliencyRequest])
+                    // Run both requests: rectangle detection for boxes, and objectness saliency for generic objects
+                    try requestHandler.perform([self.rectangleRequest, self.saliencyRequest])
                     
                     var localDetections: [DetectedProduct] = []
                     
-                    if let results = self.saliencyRequest.results {
-                        for observation in results {
+                    // 1. Process Saliency (for generic organic objects like a chappal)
+                    if let saliencyResults = self.saliencyRequest.results {
+                        for observation in saliencyResults {
                             guard let salientObjects = observation.salientObjects else { continue }
                             for object in salientObjects {
-                                // Filter out low confidence and very small artifacts
-                                guard object.confidence > 0.5 else { continue }
-                                guard object.boundingBox.width > 0.1 && object.boundingBox.height > 0.1 else { continue }
-                                
+                                guard object.confidence > 0.4 else { continue }
+                                guard object.boundingBox.width > 0.08 && object.boundingBox.height > 0.08 else { continue }
                                 localDetections.append(DetectedProduct(id: UUID(), boundingBox: object.boundingBox))
                             }
+                        }
+                    }
+                    
+                    // 2. Process Rectangles (for defined shelf product packages)
+                    if let rectResults = self.rectangleRequest.results {
+                        for observation in rectResults {
+                            localDetections.append(DetectedProduct(id: UUID(), boundingBox: observation.boundingBox))
                         }
                     }
                     

@@ -3,10 +3,17 @@ import Foundation
 import ARKit
 import Vision
 
+enum DetectionType: Equatable {
+    case rectangle
+    case barcode(String)
+    case text(String)
+}
+
 /// A model representing a detected product in 2D screen space before being mapped to 3D.
 struct DetectedProduct {
     let id: UUID
     let boundingBox: CGRect
+    let type: DetectionType
 }
 
 protocol ProductDetectorDelegate: AnyObject {
@@ -17,19 +24,35 @@ class ProductDetectionService {
     
     weak var delegate: ProductDetectorDelegate?
     
-    // We'll use a standard Vision rectangle detector as a fallback since no custom CoreML model was provided.
-    // In a real scenario, this would be a VNCoreMLRequest using a custom .mlmodel.
+    private var isProcessingFrame = false
+    private let detectionQueue = DispatchQueue(label: "com.assignment.productDetectionQueue", qos: .userInitiated)
+    private var frameDetections: [DetectedProduct] = []
+    
     private lazy var rectangleRequest: VNDetectRectanglesRequest = {
-        let request = VNDetectRectanglesRequest(completionHandler: self.handleDetections)
-        // Configure to find typical product boxes
-        request.maximumObservations = 10
-        request.minimumConfidence = 0.5
-        request.minimumSize = 0.1
+        let request = VNDetectRectanglesRequest { [weak self] request, error in
+            self?.processRectangles(request: request, error: error)
+        }
+        request.maximumObservations = 5
+        request.minimumConfidence = 0.6
+        request.minimumSize = 0.15
         return request
     }()
     
-    private var isProcessingFrame = false
-    private let detectionQueue = DispatchQueue(label: "com.assignment.productDetectionQueue", qos: .userInitiated)
+    private lazy var barcodeRequest: VNDetectBarcodesRequest = {
+        let request = VNDetectBarcodesRequest { [weak self] request, error in
+            self?.processBarcodes(request: request, error: error)
+        }
+        return request
+    }()
+    
+    private lazy var textRequest: VNRecognizeTextRequest = {
+        let request = VNRecognizeTextRequest { [weak self] request, error in
+            self?.processText(request: request, error: error)
+        }
+        request.recognitionLevel = .accurate
+        request.minimumTextHeight = 0.03
+        return request
+    }()
     
     func processFrame(_ frame: ARFrame) {
         guard !isProcessingFrame else { return }
@@ -37,39 +60,50 @@ class ProductDetectionService {
         
         // Retain the pixel buffer for processing
         let pixelBuffer = frame.capturedImage
-        
-        // Use the frame's camera orientation to ensure correct detection
-        let orientation = CGImagePropertyOrientation.up // ARFrame pixel buffers are typically right-side up in landscape, but we can adjust based on interface orientation if needed.
+        let orientation = CGImagePropertyOrientation.up
         
         let requestHandler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation, options: [:])
         
         detectionQueue.async { [weak self] in
             guard let self = self else { return }
+            self.frameDetections.removeAll()
+            
             do {
-                try requestHandler.perform([self.rectangleRequest])
+                try requestHandler.perform([self.rectangleRequest, self.barcodeRequest, self.textRequest])
+                
+                let detections = self.frameDetections
+                DispatchQueue.main.async {
+                    self.delegate?.didDetectProducts(detections)
+                }
             } catch {
-                print("Failed to perform Vision request: \(error)")
-                self.isProcessingFrame = false
+                print("Failed to perform Vision requests: \(error)")
             }
+            self.isProcessingFrame = false
         }
     }
     
-    private func handleDetections(request: VNRequest, error: Error?) {
-        defer { isProcessingFrame = false }
-        
-        guard let results = request.results as? [VNRectangleObservation], error == nil else {
-            return
+    private func processRectangles(request: VNRequest, error: Error?) {
+        guard let results = request.results as? [VNRectangleObservation], error == nil else { return }
+        for observation in results {
+            frameDetections.append(DetectedProduct(id: UUID(), boundingBox: observation.boundingBox, type: .rectangle))
         }
-        
-        let detectedProducts = results.map { observation -> DetectedProduct in
-            // The observation bounding box is in normalized coordinates (0.0 to 1.0)
-            // with the origin at the bottom-left. We will pass this to the view model
-            // which can then convert it to screen/world coordinates.
-            DetectedProduct(id: UUID(), boundingBox: observation.boundingBox)
+    }
+    
+    private func processBarcodes(request: VNRequest, error: Error?) {
+        guard let results = request.results as? [VNBarcodeObservation], error == nil else { return }
+        for observation in results {
+            let payload = observation.payloadStringValue ?? "Unknown Barcode"
+            frameDetections.append(DetectedProduct(id: UUID(), boundingBox: observation.boundingBox, type: .barcode(payload)))
         }
-        
-        DispatchQueue.main.async {
-            self.delegate?.didDetectProducts(detectedProducts)
+    }
+    
+    private func processText(request: VNRequest, error: Error?) {
+        guard let results = request.results as? [VNRecognizedTextObservation], error == nil else { return }
+        for observation in results {
+            guard let topCandidate = observation.topCandidates(1).first else { continue }
+            let text = topCandidate.string.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard text.count > 2 else { continue }
+            frameDetections.append(DetectedProduct(id: UUID(), boundingBox: observation.boundingBox, type: .text(text)))
         }
     }
 }

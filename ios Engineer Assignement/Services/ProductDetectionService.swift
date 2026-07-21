@@ -2,6 +2,7 @@
 import Foundation
 import ARKit
 import Vision
+import QuartzCore
 
 /// A model representing a detected product in 2D screen space before being mapped to 3D.
 struct DetectedProduct {
@@ -18,6 +19,8 @@ class ProductDetectionService {
     weak var delegate: ProductDetectorDelegate?
     
     private var isProcessingFrame = false
+    private var lastProcessingTime: CFTimeInterval = 0
+    private let minProcessingInterval: CFTimeInterval = 0.25 // Limit to ~4 FPS to save memory/CPU
     private let detectionQueue = DispatchQueue(label: "com.assignment.productDetectionQueue", qos: .userInitiated)
     
     private lazy var rectangleRequest: VNDetectRectanglesRequest = {
@@ -29,7 +32,11 @@ class ProductDetectionService {
     }()
     
     func processBuffer(_ pixelBuffer: CVPixelBuffer) {
+        let currentTime = CACurrentMediaTime()
+        guard currentTime - lastProcessingTime >= minProcessingInterval else { return }
         guard !isProcessingFrame else { return }
+        
+        lastProcessingTime = currentTime
         isProcessingFrame = true
         
         detectionQueue.async { [weak self] in

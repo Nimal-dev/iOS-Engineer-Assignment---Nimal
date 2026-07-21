@@ -16,7 +16,7 @@ struct ARCameraView: UIViewRepresentable {
         view.session.delegate = sessionDelegate
         view.delegate = sceneDelegate
         view.automaticallyUpdatesLighting = true
-        view.showsStatistics = false // We can turn this on for debugging
+        view.showsStatistics = false
         
         // Pass the reference back to the parent
         DispatchQueue.main.async {
@@ -25,8 +25,10 @@ struct ARCameraView: UIViewRepresentable {
         
         // Configure Session
         let configuration = ARWorldTrackingConfiguration()
-        // We only care about the environment, no specific planes are strictly required unless we want to map the shelf precisely.
         configuration.planeDetection = [.horizontal, .vertical]
+        
+        // Memory Optimization: Disable environment texturing cube maps to save ~50MB RAM
+        configuration.environmentTexturing = .none
         
         // Run session
         view.session.run(configuration, options: [.resetTracking, .removeExistingAnchors])

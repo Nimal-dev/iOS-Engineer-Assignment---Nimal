@@ -26,6 +26,26 @@ class ScannerViewModel: NSObject, ObservableObject, ARSessionDelegate, ARSCNView
     // Distance threshold in meters (15cm) to consider a product as "already scanned"
     private let duplicateDistanceThreshold: Float = 0.15
     
+    // Memory Optimization: Pre-cached shared SCNGeometry & SCNMaterial to avoid runtime allocations
+    private lazy var tickGeometry: SCNPlane = {
+        let plane = SCNPlane(width: 0.06, height: 0.06)
+        let config = UIImage.SymbolConfiguration(pointSize: 100, weight: .bold)
+        let image = UIImage(systemName: "checkmark.circle.fill", withConfiguration: config)?
+            .withTintColor(.systemGreen, renderingMode: .alwaysOriginal)
+        
+        let material = SCNMaterial()
+        material.diffuse.contents = image
+        material.isDoubleSided = true
+        plane.materials = [material]
+        return plane
+    }()
+    
+    private lazy var sharedBillboardConstraint: SCNBillboardConstraint = {
+        let constraint = SCNBillboardConstraint()
+        constraint.freeAxes = .all
+        return constraint
+    }()
+    
     override init() {
         self.detectionService = ProductDetectionService()
         super.init()
@@ -134,24 +154,8 @@ class ScannerViewModel: NSObject, ObservableObject, ARSessionDelegate, ARSCNView
         guard trackedItem != nil else { return nil }
         
         let node = SCNNode()
-        
-        // Render ONLY the green tick mark plane (no 3D green box!)
-        let plane = SCNPlane(width: 0.06, height: 0.06)
-        
-        let config = UIImage.SymbolConfiguration(pointSize: 100, weight: .bold)
-        let image = UIImage(systemName: "checkmark.circle.fill", withConfiguration: config)?
-            .withTintColor(.systemGreen, renderingMode: .alwaysOriginal)
-        
-        plane.firstMaterial?.diffuse.contents = image
-        plane.firstMaterial?.isDoubleSided = true
-        
-        let tickNode = SCNNode(geometry: plane)
-        
-        // Billboard constraint so the tick mark ALWAYS faces the user's camera
-        let billboardConstraint = SCNBillboardConstraint()
-        billboardConstraint.freeAxes = .all
-        tickNode.constraints = [billboardConstraint]
-        
+        let tickNode = SCNNode(geometry: tickGeometry)
+        tickNode.constraints = [sharedBillboardConstraint]
         node.addChildNode(tickNode)
         
         return node

@@ -91,7 +91,7 @@ struct ScannerView: View {
                         HStack(spacing: 12) {
                             Image(systemName: viewModel.isScanning ? "pause.fill" : "play.fill")
                                 .font(.system(size: 20, weight: .bold))
-                            Text(viewModel.isScanning ? "PAUSE SCAN" : "RESUME SCAN")
+                            Text(viewModel.isScanning ? "PAUSE SCAN" : "START SCAN")
                                 .font(.system(size: 14, weight: .bold, design: .rounded))
                         }
                         .foregroundColor(.white)

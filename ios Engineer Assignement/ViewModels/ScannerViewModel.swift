@@ -29,9 +29,9 @@ struct DetectionCandidate {
         return sum / Float(positions.count)
     }
     
-    /// A candidate is confirmed when detected in 3+ frames spanning at least 1 second
+    /// A candidate is confirmed when detected in 2+ frames spanning at least 0.5 seconds
     var isConfirmed: Bool {
-        return positions.count >= 3 && (lastSeen - firstSeen) >= 1.0
+        return positions.count >= 2 && (lastSeen - firstSeen) >= 0.5
     }
 }
 
@@ -40,8 +40,8 @@ struct DetectionCandidate {
 class ScannerViewModel: NSObject, ObservableObject, ARSessionDelegate, ARSCNViewDelegate, ProductDetectorDelegate {
     
     @Published var detectedProductCount: Int = 0
-    @Published var isScanning: Bool = true
-    @Published var feedbackMessage: String = "Scanning shelf..."
+    @Published var isScanning: Bool = false
+    @Published var feedbackMessage: String = "Tap START SCAN to begin"
     
     var arView: ARSCNView?
     private var detectionService: ProductDetectionService

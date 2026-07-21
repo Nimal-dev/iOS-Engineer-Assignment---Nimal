@@ -57,6 +57,9 @@ class ScannerViewModel: NSObject, ObservableObject, ARSessionDelegate, ARSCNView
         return constraint
     }()
     
+    private var lastCameraTransform: simd_float4x4?
+    private var lastCameraTransformTime: TimeInterval = 0
+    
     override init() {
         self.detectionService = ProductDetectionService()
         super.init()
@@ -75,6 +78,35 @@ class ScannerViewModel: NSObject, ObservableObject, ARSessionDelegate, ARSCNView
     func didDetectProducts(_ products: [DetectedProduct]) {
         guard let arView = arView, isScanning,
               let currentFrame = arView.session.currentFrame else { return }
+        
+        // 1. Skip processing if ARKit tracking state is limited (e.g. excessive motion/shake) or not available
+        if case .limited = currentFrame.camera.trackingState {
+            return
+        }
+        if case .notAvailable = currentFrame.camera.trackingState {
+            return
+        }
+        
+        // 2. Velocity-based shake filter: If phone is moving too fast, discard frames to prevent blur/duplicate ticks
+        let currentTransform = currentFrame.camera.transform
+        let currentTime = ProcessInfo.processInfo.systemUptime
+        if let lastTransform = lastCameraTransform {
+            let lastPos = simd_make_float3(lastTransform.columns.3.x, lastTransform.columns.3.y, lastTransform.columns.3.z)
+            let currPos = simd_make_float3(currentTransform.columns.3.x, currentTransform.columns.3.y, currentTransform.columns.3.z)
+            let distanceMoved = simd_distance(lastPos, currPos)
+            let timeDiff = currentTime - lastCameraTransformTime
+            if timeDiff > 0 {
+                let speed = distanceMoved / Float(timeDiff)
+                // If moving faster than 0.7 meters per second, skip detections
+                if speed > 0.7 {
+                    lastCameraTransform = currentTransform
+                    lastCameraTransformTime = currentTime
+                    return
+                }
+            }
+        }
+        lastCameraTransform = currentTransform
+        lastCameraTransformTime = currentTime
         
         let screenWidth = arView.bounds.width
         let screenHeight = arView.bounds.height

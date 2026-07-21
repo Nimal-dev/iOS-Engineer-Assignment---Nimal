@@ -23,8 +23,11 @@ class ScannerViewModel: NSObject, ObservableObject, ARSessionDelegate, ARSCNView
     private var trackedItems: [UUID: TrackedItem] = [:]
     private let itemLock = NSRecursiveLock()
     
-    // Distance threshold in meters (15cm) to consider a product as "already scanned"
-    private let duplicateDistanceThreshold: Float = 0.15
+    // Increased 3D Distance Threshold to 35cm so items like shoes, bags, and boxes only get 1 tick
+    private let duplicateDistanceThreshold: Float = 0.35
+    
+    // Minimum distance on screen (in pixels) between two ticks to prevent overlap
+    private let screenSpaceDuplicatePixelRadius: Float = 90.0
     
     // Memory Optimization: Pre-cached shared SCNGeometry & SCNMaterial components
     private lazy var backgroundGeometry: SCNPlane = {
@@ -134,7 +137,7 @@ class ScannerViewModel: NSObject, ObservableObject, ARSessionDelegate, ARSCNView
             
             var worldTransform: simd_float4x4?
             
-            // 1. Try hitting the exact physical feature points on the object (precise for organic shapes like a shoe/chappal)
+            // 1. Try hitting physical feature points on the object
             let hitTestResults = arView.hitTest(centerPoint, types: [.featurePoint])
             if let firstHit = hitTestResults.first {
                 worldTransform = firstHit.worldTransform
@@ -150,24 +153,23 @@ class ScannerViewModel: NSObject, ObservableObject, ARSessionDelegate, ARSCNView
             
             guard var finalTransform = worldTransform else { continue }
             
-            // Distance Check: Filter out objects too close to camera or too far away (avoids giant/micro ticks)
+            // Distance Check: Ensure object is at a natural scanning distance (0.45m to 4.0m)
             let cameraPosition = currentFrame.camera.transform.columns.3
             let objectPosition = finalTransform.columns.3
             let distance = simd_distance(simd_make_float3(cameraPosition.x, cameraPosition.y, cameraPosition.z),
                                          simd_make_float3(objectPosition.x, objectPosition.y, objectPosition.z))
             
-            guard distance > 0.3 && distance < 4.0 else { continue }
+            guard distance > 0.45 && distance < 4.0 else { continue }
             
             // Reset rotation to align perfectly with the world coordinate axes.
-            // This prevents weird anchor tilts and ensures billboard constraints rotate properly.
             finalTransform.columns.0 = simd_make_float4(1, 0, 0, 0)
             finalTransform.columns.1 = simd_make_float4(0, 1, 0, 0)
             finalTransform.columns.2 = simd_make_float4(0, 0, 1, 0)
             
             let position = simd_make_float3(finalTransform.columns.3.x, finalTransform.columns.3.y, finalTransform.columns.3.z)
             
-            // Non-Duplication Check
-            if isDuplicate(at: position) {
+            // Advanced Dual-Phase Non-Duplication Check (3D World + 2D Screen Space)
+            if isDuplicate(at: position, screenPoint: centerPoint) {
                 continue
             }
             
@@ -189,16 +191,36 @@ class ScannerViewModel: NSObject, ObservableObject, ARSessionDelegate, ARSCNView
         }
     }
     
-    private func isDuplicate(at position: simd_float3) -> Bool {
+    private func isDuplicate(at position: simd_float3, screenPoint: CGPoint) -> Bool {
         itemLock.lock()
         let items = Array(trackedItems.values)
         itemLock.unlock()
         
+        // Phase 1: 3D Spatial Distance Check (35cm radius)
         for item in items {
             if simd_distance(position, item.position) < duplicateDistanceThreshold {
                 return true
             }
         }
+        
+        // Phase 2: 2D Screen Space Projection Overlap Check
+        if let arView = arView {
+            for item in items {
+                let projectedPoint = arView.projectPoint(SCNVector3(item.position.x, item.position.y, item.position.z))
+                // Ensure the existing anchor is in front of the camera viewport
+                if projectedPoint.z > 0 && projectedPoint.z < 1.0 {
+                    let dx = projectedPoint.x - Float(screenPoint.x)
+                    let dy = projectedPoint.y - Float(screenPoint.y)
+                    let pixelDistance = sqrt(dx * dx + dy * dy)
+                    
+                    // If a tick is already displayed within 90 pixels on screen, reject duplicate!
+                    if pixelDistance < screenSpaceDuplicatePixelRadius {
+                        return true
+                    }
+                }
+            }
+        }
+        
         return false
     }
     

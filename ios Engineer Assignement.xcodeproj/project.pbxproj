@@ -422,6 +422,7 @@
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2,7";
 				XROS_DEPLOYMENT_TARGET = 26.5;
+				ttttINFOPLIST_KEY_NSCameraUsageDescription = "We need camera access for AR product detection.";
 			};
 			name = Debug;
 		};
@@ -464,6 +465,7 @@
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2,7";
 				XROS_DEPLOYMENT_TARGET = 26.5;
+				ttttINFOPLIST_KEY_NSCameraUsageDescription = "We need camera access for AR product detection.";
 			};
 			name = Release;
 		};
@@ -489,6 +491,7 @@
 				TARGETED_DEVICE_FAMILY = "1,2,7";
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ios Engineer Assignement.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ios Engineer Assignement";
 				XROS_DEPLOYMENT_TARGET = 26.5;
+				ttttINFOPLIST_KEY_NSCameraUsageDescription = "We need camera access for AR product detection.";
 			};
 			name = Debug;
 		};
@@ -514,6 +517,7 @@
 				TARGETED_DEVICE_FAMILY = "1,2,7";
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ios Engineer Assignement.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ios Engineer Assignement";
 				XROS_DEPLOYMENT_TARGET = 26.5;
+				ttttINFOPLIST_KEY_NSCameraUsageDescription = "We need camera access for AR product detection.";
 			};
 			name = Release;
 		};
@@ -538,6 +542,7 @@
 				TARGETED_DEVICE_FAMILY = "1,2,7";
 				TEST_TARGET_NAME = "ios Engineer Assignement";
 				XROS_DEPLOYMENT_TARGET = 26.5;
+				ttttINFOPLIST_KEY_NSCameraUsageDescription = "We need camera access for AR product detection.";
 			};
 			name = Debug;
 		};
@@ -562,6 +567,7 @@
 				TARGETED_DEVICE_FAMILY = "1,2,7";
 				TEST_TARGET_NAME = "ios Engineer Assignement";
 				XROS_DEPLOYMENT_TARGET = 26.5;
+				ttttINFOPLIST_KEY_NSCameraUsageDescription = "We need camera access for AR product detection.";
 			};
 			name = Release;
 		};
